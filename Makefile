@@ -1,4 +1,10 @@
-all: fmt build
+all: fmt build run
+
+deps:
+	opam install dune reason ocaml-lsp-server
+
+clean:
+	dune clean 
 
 fmt:
 	refmt */*.re --in-place
@@ -6,12 +12,6 @@ fmt:
 	
 build:
 	dune build bin/main.exe
-
-clean:
-	dune clean 
-
-deps:
-	opam install dune reason incr_dom ocaml-lsp-server
 
 run: 
 	_build/default/bin/main.exe

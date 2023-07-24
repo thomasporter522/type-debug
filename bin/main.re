@@ -272,6 +272,9 @@ let test = (e: exp) => {
 
 let let_exp = (x: var, e1: exp, e2: exp): exp => App(Fun(x, e2), e1);
 let const = (x: var, t: typ, e: exp): exp => Asc(Fun(x, e), Fun(t, Hole));
+
+// This first example tests the case that I brought up. If you look up in the
+// trace you can see it infers the types of a, b, and c to be B -> B.
 let example_term =
   const(
     "+",
@@ -297,16 +300,16 @@ let example_term =
       ),
     ),
   );
+test(example_term);
 
+// This tests the one kind of error I currently have implemented: a constructur
+// mismatch when unifying context type and analyzed type of a var
 let failure_example_term =
   const(
     "+",
     Fun(Base, Fun(Base, Base)),
     const("0", Base, let_exp("a", Var("0"), App(Var("a"), Var("0")))),
   );
-
-test(example_term);
-
 test(failure_example_term);
 
 // let t1: typ = Fun(Fun(Fun(Hole, Base), Hole), Base);
