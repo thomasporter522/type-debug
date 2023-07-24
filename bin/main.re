@@ -239,7 +239,6 @@ let rec string_of_exp = (e: exp): string => {
   | Asc(e, t) => string_of_exp(e) ++ ":" ++ string_of_typ(t)
   };
 };
-
 let rec string_of_context = (gamma: context): string => {
   switch (gamma) {
   | [] => "."
@@ -251,12 +250,15 @@ let rec string_of_context = (gamma: context): string => {
 
 // Examples and testing
 let test = (e: outer_exp) => {
-  let (t, gamma, errors) =
-    process(exp_of_outer(e), (Hole, (None, IDK)), []);
+  let e = exp_of_outer(e);
+  let (t, gamma, errors) = process(e, (Hole, (None, IDK)), []);
   let _ = t;
   let _ = errors;
-  print_endline(string_of_exp(exp_of_outer(e)));
-  print_endline(string_of_context(gamma));
+  Printf.printf(
+    "Input term: %s\nOutput context: %s\n",
+    string_of_exp(e),
+    string_of_context(gamma),
+  );
 };
 let let_exp = (x: var, e1: outer_exp, e2: outer_exp): outer_exp =>
   App(Fun(x, e2), e1);
