@@ -1,3 +1,5 @@
+// Basic Constructs
+
 type var = string;
 let string_of_var = (x: var): string => x;
 
@@ -11,6 +13,50 @@ let rec string_of_typ = (t: typ): string => {
   | Hole => "?"
   | Fun(t1, t2) =>
     "(" ++ string_of_typ(t1) ++ " -> " ++ string_of_typ(t2) ++ ")"
+  };
+};
+
+type typ_conflict_report = {
+  t1: typ,
+  t2: typ,
+  t1_min: typ,
+  t2_min: typ,
+};
+let string_of_typ_conflict_report =
+    ({t1, t2, t1_min, t2_min}: typ_conflict_report): string => {
+  let minimized_elaboration =
+    if (t1 == t1_min && t2 == t2_min) {
+      "";
+    } else {
+      " (because "
+      ++ string_of_typ(t1_min)
+      ++ " can't match "
+      ++ string_of_typ(t2_min)
+      ++ ")";
+    };
+  string_of_typ(t1)
+  ++ " can't match "
+  ++ string_of_typ(t2)
+  ++ minimized_elaboration
+  ++ ".";
+};
+
+type merge_result =
+  | Success(typ)
+  | Fail(typ_conflict_report);
+let rec merge = (t1: typ, t2: typ): merge_result => {
+  switch (t1, t2) {
+  | (Base, Base) => Success(Base)
+  | (Hole, t2) => Success(t2)
+  | (t1, Hole) => Success(t1)
+  | (Fun(t3, t4), Fun(t5, t6)) =>
+    switch (merge(t3, t5), merge(t4, t6)) {
+    | (Success(t7), Success(t8)) => Success(Fun(t7, t8))
+    | (Fail(report), _) => Fail({...report, t1, t2})
+    | (_, Fail(report)) => Fail({...report, t1, t2})
+    }
+  | (Base, Fun(_, _))
+  | (Fun(_, _), Base) => Fail({t1, t2, t1_min: t1, t2_min: t2})
   };
 };
 let match_arrow = (t: typ): (typ, typ) => {
@@ -39,16 +85,6 @@ let rec string_of_exp = (e: exp): string => {
     "(fun " ++ string_of_var(x) ++ " -> " ++ string_of_exp(e) ++ ")"
   | App(e1, e2) => string_of_exp(e1) ++ "(" ++ string_of_exp(e2) ++ ")"
   | Asc(e, t) => string_of_exp(e) ++ ":" ++ string_of_typ(t)
-  };
-};
-let rec merge = (t1: typ, t2: typ): typ => {
-  switch (t1, t2) {
-  | (Base, Base) => Base
-  | (Hole, t2) => t2
-  | (t1, Hole) => t1
-  | (Fun(t1, t2), Fun(t3, t4)) => Fun(merge(t1, t3), merge(t2, t4))
-  | (Base, Fun(_, _)) => failwith("no")
-  | (Fun(_, _), Base) => failwith("no")
   };
 };
 
@@ -89,7 +125,13 @@ let rec context_remove = (gamma: context, x: var): context => {
 let rec context_merge_item = (gamma: context, x: var, t: typ): context => {
   switch (gamma) {
   | Nil => Cons((x, t), Nil)
-  | Cons((y, t2), gamma2) when x == y => Cons((x, merge(t, t2)), gamma2)
+  | Cons((y, t2), gamma2) when x == y =>
+    switch (merge(t, t2)) {
+    | Success(t3) => Cons((x, t3), gamma2)
+    | Fail(report) =>
+      print_endline(string_of_typ_conflict_report(report));
+      failwith("error");
+    }
   | Cons(pair, gamma2) => Cons(pair, context_merge_item(gamma2, x, t))
   };
 };
@@ -100,6 +142,42 @@ let rec context_merge = (gamma1: context, gamma2: context): context => {
     context_merge(gamma3, context_merge_item(gamma2, x, t))
   };
 };
+
+// Debug
+
+type error_report =
+  // | Var_Absent({location: exp})
+  | Var_Present({
+      location: exp,
+      context_typ: typ,
+      expected_typ: typ,
+      typ_conflict_report,
+    });
+// | Asc({
+//     location: exp,
+//     asc_typ: typ,
+//     expected_typ: typ,
+//     typ_conflict_report,
+//   })
+// | Fun({
+//     location: exp,
+//     expected_typ: typ,
+//   });
+
+let string_of_error_report = (report: error_report): string =>
+  switch (report) {
+  | Var_Present({location, context_typ, expected_typ, typ_conflict_report}) =>
+    string_of_exp(location)
+    ++ " seems to have type "
+    ++ string_of_typ(context_typ)
+    ++ " but needs to have type "
+    ++ string_of_typ(expected_typ)
+    ++ ". "
+    ++ string_of_typ_conflict_report(typ_conflict_report)
+  // | _ => "TODO"
+  };
+
+// Main process function
 
 let rec process = (e: exp, t: typ, gamma: context): (typ, context) => {
   print_endline(
@@ -125,8 +203,20 @@ let rec process = (e: exp, t: typ, gamma: context): (typ, context) => {
   };
   switch (e) {
   | Var(x) =>
-    let t2 = merge(context_search(gamma, x), t);
-    return(t2, context_add(gamma, x, t2));
+    let context_t = context_search(gamma, x);
+    switch (merge(context_t, t)) {
+    | Success(t2) => return(t2, context_add(gamma, x, t2))
+    | Fail(typ_conflict_report) =>
+      let error_report =
+        Var_Present({
+          location: e,
+          context_typ: context_t,
+          expected_typ: t,
+          typ_conflict_report,
+        });
+      print_endline(string_of_error_report(error_report));
+      failwith("error");
+    };
   | Fun(x, e) =>
     let (t1, t2) = match_arrow(t);
     let (t3, gamma2) = process(e, t2, context_add(gamma, x, t1));
@@ -150,9 +240,23 @@ let rec process = (e: exp, t: typ, gamma: context): (typ, context) => {
       return(return_t, return_gamma);
     };
   | Asc(e, t2) =>
-    let (return_t, return_gamma) = process(e, merge(t, t2), gamma);
-    return(return_t, return_gamma);
+    switch (merge(t, t2)) {
+    | Success(t3) =>
+      let (return_t, return_gamma) = process(e, t3, gamma);
+      return(return_t, return_gamma);
+    | Fail(report) =>
+      print_endline(string_of_typ_conflict_report(report));
+      failwith("error");
+    }
   };
+};
+
+// Testing
+
+let test = (e: exp) => {
+  let (t, gamma) = process(e, Hole, Nil);
+  print_endline(string_of_typ(t));
+  print_endline(string_of_context(gamma));
 };
 
 // let let_exp = (x: var, e1: exp, e2: exp): exp => App(Fun(x, e2), e1);
@@ -182,15 +286,28 @@ let example_term =
       ),
     ),
   );
-print_endline(string_of_exp(example_term));
 
-// let example_term2 =
+// let failure_example_term =
 //   const(
 //     "+",
 //     Fun(Base, Fun(Base, Base)),
-//     const("0", Base, App(Var("+"), Var("0"))),
+//     const("0", Base, let_exp("a", Var("0"), App(Var("a"), Var("0")))),
 //   );
 
-let (t, gamma) = process(example_term, Hole, Nil);
-print_endline(string_of_typ(t));
-print_endline(string_of_context(gamma));
+test(example_term);
+
+print_endline("jello?");
+
+// test(failure_example_term);
+
+print_endline("jello?");
+
+let t1: typ = Fun(Fun(Fun(Hole, Base), Hole), Base);
+let t2: typ = Fun(Fun(Base, Hole), Base);
+
+print_endline("jello?");
+
+switch (merge(t1, t2)) {
+| Success(_) => print_endline("impossible")
+| Fail(report) => print_endline(string_of_typ_conflict_report(report))
+};
