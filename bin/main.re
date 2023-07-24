@@ -1,59 +1,233 @@
-// Types
-
+// Datatypes
 type var = string;
-let string_of_var = (x: var): string => x;
+type history_item =
+  | IDK
+  | FreeUse
+  | Ascription
+  | Error
+  | ArrowHole(history_item)
+  | FunArrow
+  | AppArrow;
+type annotation_item = (option(var), history_item);
 
-type typ =
-  | Base
+type annotated_typ('a) =
   | Hole
-  | Fun(typ, typ);
-let rec string_of_typ = (t: typ): string => {
+  | Base
+  | Arrow(annotation('a), annotation('a))
+and annotation('a) = (annotated_typ('a), 'a);
+
+type outer_typ =
+  | Hole
+  | Base
+  | Arrow(outer_typ, outer_typ);
+type typ = annotation(annotation_item);
+type outer_exp =
+  | Var(var)
+  | Asc(outer_exp, outer_typ)
+  | Fun(var, outer_exp)
+  | App(outer_exp, outer_exp);
+type exp =
+  | Var(var)
+  | Asc(exp, typ)
+  | Fun(var, exp)
+  | App(exp, exp);
+
+type context = list((var, typ));
+type merge_result =
+  | Success(typ)
+  | Fail(typ);
+type error = unit;
+
+let rec typ_of_outer = (t: outer_typ): typ => {
   switch (t) {
-  | Base => "B"
-  | Hole => "?"
-  | Fun(t1, t2) =>
-    "(" ++ string_of_typ(t1) ++ " -> " ++ string_of_typ(t2) ++ ")"
+  | Hole => (Hole, (None, Ascription))
+  | Base => (Base, (None, Ascription))
+  | Arrow(t1, t2) => (
+      Arrow(typ_of_outer(t1), typ_of_outer(t2)),
+      (None, Ascription),
+    )
+  };
+};
+let rec exp_of_outer = (e: outer_exp): exp => {
+  switch (e) {
+  | Var(x) => Var(x)
+  | Asc(e, t) => Asc(exp_of_outer(e), typ_of_outer(t))
+  | Fun(x, e) => Fun(x, exp_of_outer(e))
+  | App(e1, e2) => App(exp_of_outer(e1), exp_of_outer(e2))
   };
 };
 
-type typ_conflict_report = {
-  t1: typ,
-  t2: typ,
-  t1_min: typ,
-  t2_min: typ,
+// Utility functions
+let rec merge = (typ1: typ, typ2: typ): merge_result => {
+  let (t1, a1) = typ1;
+  let (t2, a2) = typ2;
+  switch (t1, t2) {
+  | (Base, Base) => Success((Base, a1))
+  | (Hole, t2) => Success((t2, a2))
+  | (t1, Hole) => Success((t1, a1))
+  | (Arrow(t3, t4), Arrow(t5, t6)) =>
+    switch (merge(t3, t5), merge(t4, t6)) {
+    | (Success(t7), Success(t8)) => Success((Arrow(t7, t8), a1))
+    | (Fail(t7), Success(t8))
+    | (Success(t7), Fail(t8))
+    | (Fail(t7), Fail(t8)) => Fail((Arrow(t7, t8), a1))
+    }
+  | (Base, Arrow(_, _))
+  | (Arrow(_, _), Base) => Fail((Hole, (None, Error)))
+  };
 };
-let string_of_typ_conflict_report =
-    ({t1, t2, t1_min, t2_min}: typ_conflict_report): string => {
-  let minimized_elaboration =
-    if (t1 == t1_min && t2 == t2_min) {
-      "";
+let match_arrow = ((t, (v, h)): typ): option((typ, typ)) => {
+  switch (t) {
+  | Arrow(t1, t2) => Some((t1, t2))
+  | Hole => Some(((Hole, (v, ArrowHole(h))), (Hole, (v, ArrowHole(h)))))
+  | Base => None
+  };
+};
+let context_get = (gamma: context, x: var): typ => {
+  switch (List.assoc_opt(x, gamma)) {
+  | Some(typ) => typ
+  | None => (Hole, (Some(x), FreeUse))
+  };
+};
+let context_add = (gamma: context, x: var, t: typ): context => {
+  let gamma' = List.remove_assoc(x, gamma);
+  [(x, t), ...gamma'];
+};
+let rec context_merge_item =
+        (gamma: context, x: var, t: typ): (context, list(error)) => {
+  switch (gamma) {
+  | [] => ([(x, t)], [])
+  | [(y, t2), ...gamma2] when x == y =>
+    switch (merge(t, t2)) {
+    | Success(t3) => ([(x, t3), ...gamma2], [])
+    | Fail(t3) => ([(x, t3), ...gamma2], [()])
+    }
+  | [item, ...gamma2] =>
+    let (gamma3, errors) = context_merge_item(gamma2, x, t);
+    ([item, ...gamma3], errors);
+  };
+};
+let rec context_merge =
+        (gamma1: context, gamma2: context): (context, list(error)) => {
+  switch (gamma1) {
+  | [] => (gamma2, [])
+  | [(x, t), ...gamma3] =>
+    let (gamma4, errors1) = context_merge_item(gamma2, x, t);
+    let (gamma5, errors2) = context_merge(gamma3, gamma4);
+    (gamma5, List.append(errors1, errors2));
+  };
+};
+let item_in_context = ((x, (t, _)), gamma): bool => {
+  switch (List.assoc_opt(x, gamma)) {
+  | Some((t', _)) => t == t'
+  | None => false
+  };
+};
+let rec context_in_context = (gamma1: context, gamma2: context): bool => {
+  switch (gamma1, gamma2) {
+  | ([], _) => true
+  | ([item, ...gamma3], gamma2) =>
+    if (item_in_context(item, gamma2)) {
+      context_in_context(gamma3, gamma2);
     } else {
-      " (because "
-      ++ string_of_typ(t1_min)
-      ++ " can't match "
-      ++ string_of_typ(t2_min)
-      ++ ")";
+      false;
+    }
+  };
+};
+let context_equal = (gamma1, gamma2) =>
+  context_in_context(gamma1, gamma2) && context_in_context(gamma2, gamma1);
+
+// Main function: process
+let rec process =
+        (e: exp, t: typ, gamma: context): (typ, context, list(error)) => {
+  switch (e) {
+  | Var(x) => process_var(x, t, gamma)
+  | Asc(e, t2) => process_asc(e, t2, t, gamma)
+  | Fun(x, e) => process_fun(x, e, t, gamma)
+  | App(e1, e2) => process_app(e1, e2, t, gamma)
+  };
+}
+and process_var =
+    (x: var, t: typ, gamma: context): (typ, context, list(error)) => {
+  let context_t = context_get(gamma, x);
+  switch (merge(context_t, t)) {
+  | Success(t2) => (t2, context_add(gamma, x, t2), [])
+  | Fail(t2) => (t2, gamma, [()])
+  };
+}
+and process_asc =
+    (e: exp, t2: typ, t: typ, gamma: context): (typ, context, list(error)) => {
+  switch (merge(t, t2)) {
+  | Success(t3) =>
+    let (return_t, return_gamma, errors) = process(e, t3, gamma);
+    (return_t, return_gamma, errors);
+  | Fail(t3) => (t3, gamma, [()])
+  };
+}
+and process_fun =
+    (x: var, e: exp, t: typ, gamma: context): (typ, context, list(error)) => {
+  switch (match_arrow(t)) {
+  | Some((t1, t2)) =>
+    let (t3, gamma2, errors) = process(e, t2, context_add(gamma, x, t1));
+    let gamma_x = context_get(gamma2, x);
+    (
+      (Arrow(gamma_x, t3), (None, FunArrow)),
+      List.remove_assoc(x, gamma2),
+      errors,
+    );
+  | None => (t, gamma, [()])
+  };
+}
+and process_app =
+    (e1: exp, e2: exp, t: typ, gamma: context): (typ, context, list(error)) => {
+  let app_helper =
+      (t_in: typ, t_out: typ, gamma: context)
+      : (typ, typ, context, list(error)) => {
+    let (t2, gamma2, errors1) =
+      process(e1, (Arrow(t_in, t_out), (None, AppArrow)), gamma);
+    switch (match_arrow(t2)) {
+    | Some((t_in_intermediate, t_out_new)) =>
+      let (t_in_new, gamma3, errors2) =
+        process(e2, t_in_intermediate, gamma2);
+      let (gamma4, errors3) = context_merge(gamma2, gamma3);
+      (
+        t_in_new,
+        t_out_new,
+        gamma4,
+        List.concat([errors1, errors2, errors3]),
+      );
+    | None => (t_in, t_out, gamma2, List.append(errors1, [()]))
     };
-  string_of_typ(t1)
-  ++ " can't match "
-  ++ string_of_typ(t2)
-  ++ minimized_elaboration
-  ++ ".";
+  };
+  let rec app_loop = (t_in: typ, t_out: typ, gamma: context) => {
+    let (t_in_new, t_out_new, gamma_new, errors_new) =
+      app_helper(t_in, t_out, gamma);
+    if (t_in_new == t_in
+        && t_out_new == t_out
+        && context_equal(gamma_new, gamma)) {
+      (t_out_new, gamma_new, errors_new);
+    } else {
+      app_loop(t_in_new, t_out_new, gamma_new);
+    };
+  };
+  app_loop((Hole, (None, IDK)), t, gamma);
 };
 
-type merge_result =
-  | Success(typ)
-  | Fail(typ_conflict_report);
+// String functions
 
-type exp =
-  | Var(var)
-  | Fun(var, exp)
-  | App(exp, exp)
-  | Asc(exp, typ);
+let string_of_var = (x: var): string => x;
+let rec string_of_typ = ((t, _): typ): string => {
+  switch (t) {
+  | Base => "B"
+  | Hole => "?"
+  | Arrow(t1, t2) =>
+    "(" ++ string_of_typ(t1) ++ " -> " ++ string_of_typ(t2) ++ ")"
+  };
+};
 let rec string_of_exp = (e: exp): string => {
   switch (e) {
   | Var(x) => string_of_var(x)
-  | Asc(Fun(x, e), Fun(t1, t2)) =>
+  | Asc(Fun(x, e), (Arrow(t1, t2), _)) =>
     "(fun "
     ++ string_of_exp(Asc(Var(x), t1))
     ++ " -> "
@@ -66,260 +240,32 @@ let rec string_of_exp = (e: exp): string => {
   };
 };
 
-// type expected_typ_report =
-//   | Nil;
-// type context_item_report =
-//   | Abs(expected_typ_report)
-//   | Var({
-//       context_item_report,
-//       expected_typ_report,
-//     });
-
-type context =
-  | Nil
-  | Cons((var, typ), context);
 let rec string_of_context = (gamma: context): string => {
   switch (gamma) {
-  | Nil => "."
-  | Cons((x, t), Nil) => string_of_var(x) ++ ": " ++ string_of_typ(t)
-  | Cons((x, t), gamma) =>
-    string_of_context(Cons((x, t), Nil))
-    ++ ", "
-    ++ string_of_context(gamma)
+  | [] => "."
+  | [(x, t)] => string_of_var(x) ++ ": " ++ string_of_typ(t)
+  | [(x, t), ...gamma] =>
+    string_of_context([(x, t)]) ++ ", " ++ string_of_context(gamma)
   };
 };
 
-type error_report =
-  // | Var_Absent({location: exp})
-  | Var_Present({
-      location: exp,
-      context_typ: typ,
-      expected_typ: typ,
-      typ_conflict_report,
-    });
-// | Asc({
-//     location: exp,
-//     asc_typ: typ,
-//     expected_typ: typ,
-//     typ_conflict_report,
-//   })
-// | Fun({
-//     location: exp,
-//     expected_typ: typ,
-//   });
-
-let string_of_error_report = (report: error_report): string =>
-  switch (report) {
-  | Var_Present({location, context_typ, expected_typ, typ_conflict_report}) =>
-    string_of_exp(location)
-    ++ " seems to have type "
-    ++ string_of_typ(context_typ)
-    ++ " but needs to have type "
-    ++ string_of_typ(expected_typ)
-    ++ ". "
-    ++ string_of_typ_conflict_report(typ_conflict_report)
-  // | _ => "TODO"
-  };
-
-// Functions
-
-let rec merge = (t1: typ, t2: typ): merge_result => {
-  switch (t1, t2) {
-  | (Base, Base) => Success(Base)
-  | (Hole, t2) => Success(t2)
-  | (t1, Hole) => Success(t1)
-  | (Fun(t3, t4), Fun(t5, t6)) =>
-    switch (merge(t3, t5), merge(t4, t6)) {
-    | (Success(t7), Success(t8)) => Success(Fun(t7, t8))
-    | (Fail(report), _) => Fail({...report, t1, t2})
-    | (_, Fail(report)) => Fail({...report, t1, t2})
-    }
-  | (Base, Fun(_, _))
-  | (Fun(_, _), Base) => Fail({t1, t2, t1_min: t1, t2_min: t2})
-  };
-};
-let match_arrow = (t: typ): (typ, typ) => {
-  switch (t) {
-  | Fun(t1, t2) => (t1, t2)
-  | Hole => (Hole, Hole)
-  | Base => failwith("no")
-  };
-};
-
-let rec item_in_context = (item, gamma): bool => {
-  switch (gamma) {
-  | Nil => false
-  | Cons(item2, _) when item2 == item => true
-  | Cons(_, gamma2) => item_in_context(item, gamma2)
-  };
-};
-
-let rec context_in_context = (gamma1: context, gamma2: context): bool => {
-  switch (gamma1, gamma2) {
-  | (Nil, _) => true
-  | (Cons(item, gamma3), gamma2) =>
-    if (item_in_context(item, gamma2)) {
-      context_in_context(gamma3, gamma2);
-    } else {
-      false;
-    }
-  };
-};
-
-let context_equal = (gamma1, gamma2) =>
-  context_in_context(gamma1, gamma2) && context_in_context(gamma2, gamma1);
-
-let rec context_add = (gamma: context, x: var, t: typ): context => {
-  switch (gamma) {
-  | Nil => Cons((x, t), Nil)
-  | Cons((y, _), gamma2) when x == y => Cons((x, t), gamma2)
-  | Cons(pair, gamma2) => Cons(pair, context_add(gamma2, x, t))
-  };
-};
-let rec context_search = (gamma: context, x: var): typ => {
-  switch (gamma) {
-  | Nil => Hole
-  | Cons((y, t), _) when x == y => t
-  | Cons(_, gamma2) => context_search(gamma2, x)
-  };
-};
-let rec context_remove = (gamma: context, x: var): context => {
-  switch (gamma) {
-  | Nil => Nil
-  | Cons((y, _), gamma2) when x == y => gamma2
-  | Cons(pair, gamma2) => Cons(pair, context_remove(gamma2, x))
-  };
-};
-let rec context_merge_item = (gamma: context, x: var, t: typ): context => {
-  switch (gamma) {
-  | Nil => Cons((x, t), Nil)
-  | Cons((y, t2), gamma2) when x == y =>
-    switch (merge(t, t2)) {
-    | Success(t3) => Cons((x, t3), gamma2)
-    | Fail(report) =>
-      print_endline(string_of_typ_conflict_report(report));
-      failwith("error");
-    }
-  | Cons(pair, gamma2) => Cons(pair, context_merge_item(gamma2, x, t))
-  };
-};
-let rec context_merge = (gamma1: context, gamma2: context): context => {
-  switch (gamma1) {
-  | Nil => gamma2
-  | Cons((x, t), gamma3) =>
-    context_merge(gamma3, context_merge_item(gamma2, x, t))
-  };
-};
-
-// Main process function
-
-let rec process = (e: exp, t: typ, gamma: context): (typ, context) => {
-  // print_endline(
-  //   string_of_context(gamma)
-  //   ++ " |- "
-  //   ++ string_of_typ(t)
-  //   ++ " => "
-  //   ++ string_of_exp(e),
-  // );
-  let return = (return_t: typ, return_gamma: context): (typ, context) => {
-    (
-      // print_endline(
-      //   string_of_context(gamma)
-      //   ++ " |- "
-      //   ++ string_of_typ(t)
-      //   ++ " => "
-      //   ++ string_of_exp(e)
-      //   ++ " => "
-      //   ++ string_of_typ(return_t)
-      //   ++ " -| "
-      //   ++ string_of_context(return_gamma),
-      // );
-      return_t,
-      return_gamma,
-    );
-  };
-  switch (e) {
-  | Var(x) => process_var(x, t, gamma, return)
-  | Fun(x, e) => process_fun(x, e, t, gamma, return)
-  | App(e1, e2) => process_app(e1, e2, t, gamma, return)
-  | Asc(e, t2) => process_asc(e, t2, t, gamma, return)
-  };
-}
-and process_var = (x, t, gamma, return) => {
-  let context_t = context_search(gamma, x);
-  switch (merge(context_t, t)) {
-  | Success(t2) => return(t2, context_add(gamma, x, t2))
-  | Fail(typ_conflict_report) =>
-    let error_report =
-      Var_Present({
-        location: Var(x),
-        context_typ: context_t,
-        expected_typ: t,
-        typ_conflict_report,
-      });
-    print_endline(string_of_error_report(error_report));
-    failwith("error");
-  };
-}
-and process_fun = (x, e, t, gamma, return) => {
-  let (t1, t2) = match_arrow(t);
-  let (t3, gamma2) = process(e, t2, context_add(gamma, x, t1));
-  return(
-    Fun(context_search(gamma2, x), t3): typ,
-    context_remove(gamma2, x),
-  );
-}
-and process_app = (e1, e2, t, gamma, return) => {
-  let app_helper =
-      (t_in: typ, t_out: typ, gamma: context): (typ, typ, context) => {
-    let (t2, gamma_intermediate) = process(e1, Fun(t_in, t_out), gamma);
-    let (t_in_intermediate, t_out_new) = match_arrow(t2);
-
-    let (t_in_new, gamma_new) =
-      process(e2, t_in_intermediate, gamma_intermediate);
-    (t_in_new, t_out_new, context_merge(gamma_intermediate, gamma_new));
-  };
-  let rec app_loop = (t_in: typ, t_out: typ, gamma: context) => {
-    let (t_in_new, t_out_new, gamma_new) = app_helper(t_in, t_out, gamma);
-    if (t_in_new == t_in
-        && t_out_new == t_out
-        && context_equal(gamma_new, gamma)) {
-      return(t_out_new, gamma_new);
-    } else {
-      app_loop(t_in_new, t_out_new, gamma_new);
-    };
-  };
-  app_loop(Hole, t, gamma);
-}
-and process_asc = (e, t2, t, gamma, return) => {
-  switch (merge(t, t2)) {
-  | Success(t3) =>
-    let (return_t, return_gamma) = process(e, t3, gamma);
-    return(return_t, return_gamma);
-  | Fail(report) =>
-    print_endline(string_of_typ_conflict_report(report));
-    failwith("error");
-  };
-};
-
-// Testing
-
-let test = (e: exp) => {
-  print_endline(string_of_exp(e));
-  let (t, gamma) = process(e, Hole, Nil);
-  print_endline(string_of_typ(t));
+// Examples and testing
+let test = (e: outer_exp) => {
+  let (t, gamma, errors) =
+    process(exp_of_outer(e), (Hole, (None, IDK)), []);
+  let _ = t;
+  let _ = errors;
+  print_endline(string_of_exp(exp_of_outer(e)));
   print_endline(string_of_context(gamma));
 };
-
-let let_exp = (x: var, e1: exp, e2: exp): exp => App(Fun(x, e2), e1);
-let const = (x: var, t: typ, e: exp): exp => Asc(Fun(x, e), Fun(t, Hole));
-
-// This first example tests the case that I brought up. If you look up in the
-// trace you can see it infers the types of a, b, and c to be B -> B.
-let example_term_long =
+let let_exp = (x: var, e1: outer_exp, e2: outer_exp): outer_exp =>
+  App(Fun(x, e2), e1);
+let const = (x: var, t: outer_typ, e: outer_exp): outer_exp =>
+  Asc(Fun(x, e), Arrow(t, Hole));
+let example_term_long: outer_exp =
   const(
     "+",
-    Fun(Base, Fun(Base, Base)),
+    Arrow(Base, Arrow(Base, Base)),
     const(
       "0",
       Base,
@@ -350,22 +296,12 @@ let example_term_long =
       ),
     ),
   );
-test(example_term_long);
-
-// This tests the one kind of error I currently have implemented: a constructur
-// mismatch when unifying context type and analyzed type of a var
 let failure_example_term =
   const(
     "+",
-    Fun(Base, Fun(Base, Base)),
+    Arrow(Base, Arrow(Base, Base)),
     const("0", Base, let_exp("a", Var("0"), App(Var("a"), Var("0")))),
   );
+
+test(example_term_long);
 test(failure_example_term);
-
-// let t1: typ = Fun(Fun(Fun(Hole, Base), Hole), Base);
-// let t2: typ = Fun(Fun(Base, Hole), Base);
-
-// switch (merge(t1, t2)) {
-// | Success(_) => print_endline("impossible")
-// | Fail(report) => print_endline(string_of_typ_conflict_report(report))
-// };

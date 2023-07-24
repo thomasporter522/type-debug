@@ -1,2 +1,2 @@
 (executables
- (names main))
+ (names main old))
