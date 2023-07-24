@@ -146,6 +146,29 @@ let match_arrow = (t: typ): (typ, typ) => {
   };
 };
 
+let rec item_in_context = (item, gamma): bool => {
+  switch (gamma) {
+  | Nil => false
+  | Cons(item2, _) when item2 == item => true
+  | Cons(_, gamma2) => item_in_context(item, gamma2)
+  };
+};
+
+let rec context_in_context = (gamma1: context, gamma2: context): bool => {
+  switch (gamma1, gamma2) {
+  | (Nil, _) => true
+  | (Cons(item, gamma3), gamma2) =>
+    if (item_in_context(item, gamma2)) {
+      context_in_context(gamma3, gamma2);
+    } else {
+      false;
+    }
+  };
+};
+
+let context_equal = (gamma1, gamma2) =>
+  context_in_context(gamma1, gamma2) && context_in_context(gamma2, gamma1);
+
 let rec context_add = (gamma: context, x: var, t: typ): context => {
   switch (gamma) {
   | Nil => Cons((x, t), Nil)
@@ -155,7 +178,7 @@ let rec context_add = (gamma: context, x: var, t: typ): context => {
 };
 let rec context_search = (gamma: context, x: var): typ => {
   switch (gamma) {
-  | Nil => failwith("no")
+  | Nil => Hole
   | Cons((y, t), _) when x == y => t
   | Cons(_, gamma2) => context_search(gamma2, x)
   };
@@ -191,80 +214,98 @@ let rec context_merge = (gamma1: context, gamma2: context): context => {
 // Main process function
 
 let rec process = (e: exp, t: typ, gamma: context): (typ, context) => {
-  print_endline(
-    string_of_context(gamma)
-    ++ " |- "
-    ++ string_of_typ(t)
-    ++ " => "
-    ++ string_of_exp(e),
-  );
+  // print_endline(
+  //   string_of_context(gamma)
+  //   ++ " |- "
+  //   ++ string_of_typ(t)
+  //   ++ " => "
+  //   ++ string_of_exp(e),
+  // );
   let return = (return_t: typ, return_gamma: context): (typ, context) => {
-    print_endline(
-      string_of_context(gamma)
-      ++ " |- "
-      ++ string_of_typ(t)
-      ++ " => "
-      ++ string_of_exp(e)
-      ++ " => "
-      ++ string_of_typ(return_t)
-      ++ " -| "
-      ++ string_of_context(return_gamma),
+    (
+      // print_endline(
+      //   string_of_context(gamma)
+      //   ++ " |- "
+      //   ++ string_of_typ(t)
+      //   ++ " => "
+      //   ++ string_of_exp(e)
+      //   ++ " => "
+      //   ++ string_of_typ(return_t)
+      //   ++ " -| "
+      //   ++ string_of_context(return_gamma),
+      // );
+      return_t,
+      return_gamma,
     );
-    (return_t, return_gamma);
   };
   switch (e) {
-  | Var(x) =>
-    let context_t = context_search(gamma, x);
-    switch (merge(context_t, t)) {
-    | Success(t2) => return(t2, context_add(gamma, x, t2))
-    | Fail(typ_conflict_report) =>
-      let error_report =
-        Var_Present({
-          location: e,
-          context_typ: context_t,
-          expected_typ: t,
-          typ_conflict_report,
-        });
-      print_endline(string_of_error_report(error_report));
-      failwith("error");
-    };
-  | Fun(x, e) =>
-    let (t1, t2) = match_arrow(t);
-    let (t3, gamma2) = process(e, t2, context_add(gamma, x, t1));
-    return(Fun(context_search(gamma2, x), t3), context_remove(gamma2, x));
-  | App(e1, e2) =>
-    let (t2, gamma2) = process(e1, Fun(Hole, t), gamma);
-    let (t3, t4) = match_arrow(t2);
+  | Var(x) => process_var(x, t, gamma, return)
+  | Fun(x, e) => process_fun(x, e, t, gamma, return)
+  | App(e1, e2) => process_app(e1, e2, t, gamma, return)
+  | Asc(e, t2) => process_asc(e, t2, t, gamma, return)
+  };
+}
+and process_var = (x, t, gamma, return) => {
+  let context_t = context_search(gamma, x);
+  switch (merge(context_t, t)) {
+  | Success(t2) => return(t2, context_add(gamma, x, t2))
+  | Fail(typ_conflict_report) =>
+    let error_report =
+      Var_Present({
+        location: Var(x),
+        context_typ: context_t,
+        expected_typ: t,
+        typ_conflict_report,
+      });
+    print_endline(string_of_error_report(error_report));
+    failwith("error");
+  };
+}
+and process_fun = (x, e, t, gamma, return) => {
+  let (t1, t2) = match_arrow(t);
+  let (t3, gamma2) = process(e, t2, context_add(gamma, x, t1));
+  return(
+    Fun(context_search(gamma2, x), t3): typ,
+    context_remove(gamma2, x),
+  );
+}
+and process_app = (e1, e2, t, gamma, return) => {
+  let app_helper =
+      (t_in: typ, t_out: typ, gamma: context): (typ, typ, context) => {
+    let (t2, gamma_intermediate) = process(e1, Fun(t_in, t_out), gamma);
+    let (t_in_intermediate, t_out_new) = match_arrow(t2);
 
-    let (t5, gamma3) = process(e2, t3, gamma2);
-    let gamma4 = context_merge(gamma2, gamma3);
-
-    let (t6, gamma5) = process(e1, Fun(t5, t4), gamma4);
-    let (_, t8) = match_arrow(t6);
-
-    let final_t: typ = t8;
-    let final_gamma = context_merge(gamma4, gamma5);
-    if (final_t == t && final_gamma == gamma) {
-      return(t, gamma);
+    let (t_in_new, gamma_new) =
+      process(e2, t_in_intermediate, gamma_intermediate);
+    (t_in_new, t_out_new, context_merge(gamma_intermediate, gamma_new));
+  };
+  let rec app_loop = (t_in: typ, t_out: typ, gamma: context) => {
+    let (t_in_new, t_out_new, gamma_new) = app_helper(t_in, t_out, gamma);
+    if (t_in_new == t_in
+        && t_out_new == t_out
+        && context_equal(gamma_new, gamma)) {
+      return(t_out_new, gamma_new);
     } else {
-      let (return_t, return_gamma) = process(e, final_t, final_gamma);
-      return(return_t, return_gamma);
+      app_loop(t_in_new, t_out_new, gamma_new);
     };
-  | Asc(e, t2) =>
-    switch (merge(t, t2)) {
-    | Success(t3) =>
-      let (return_t, return_gamma) = process(e, t3, gamma);
-      return(return_t, return_gamma);
-    | Fail(report) =>
-      print_endline(string_of_typ_conflict_report(report));
-      failwith("error");
-    }
+  };
+  app_loop(Hole, t, gamma);
+}
+and process_asc = (e, t2, t, gamma, return) => {
+  switch (merge(t, t2)) {
+  | Success(t3) =>
+    let (return_t, return_gamma) = process(e, t3, gamma);
+    return(return_t, return_gamma);
+  | Fail(report) =>
+    print_endline(string_of_typ_conflict_report(report));
+    failwith("error");
   };
 };
 
 // Testing
 
 let test = (e: exp) => {
+  print_endline(string_of_exp(e));
   let (t, gamma) = process(e, Hole, Nil);
   print_endline(string_of_typ(t));
   print_endline(string_of_context(gamma));
@@ -275,24 +316,33 @@ let const = (x: var, t: typ, e: exp): exp => Asc(Fun(x, e), Fun(t, Hole));
 
 // This first example tests the case that I brought up. If you look up in the
 // trace you can see it infers the types of a, b, and c to be B -> B.
-let example_term =
+let example_term_long =
   const(
     "+",
     Fun(Base, Fun(Base, Base)),
     const(
       "0",
       Base,
-      Fun(
-        "a",
-        Fun(
-          "b",
-          Fun(
-            "c",
+      App(
+        App(
+          Var("+"),
+          App(
+            Var("a"),
             App(
+              Var("b"),
               App(
-                Var("+"),
-                App(Var("a"), App(Var("b"), App(Var("c"), Var("0")))),
+                Var("c"),
+                App(Var("d"), App(Var("e"), App(Var("f"), Var("0")))),
               ),
+            ),
+          ),
+        ),
+        App(
+          Var("f"),
+          App(
+            Var("e"),
+            App(
+              Var("d"),
               App(Var("c"), App(Var("b"), App(Var("a"), Var("0")))),
             ),
           ),
@@ -300,7 +350,7 @@ let example_term =
       ),
     ),
   );
-test(example_term);
+test(example_term_long);
 
 // This tests the one kind of error I currently have implemented: a constructur
 // mismatch when unifying context type and analyzed type of a var
