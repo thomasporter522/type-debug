@@ -1,4 +1,4 @@
-// Basic Constructs
+// Types
 
 type var = string;
 let string_of_var = (x: var): string => x;
@@ -44,6 +44,85 @@ let string_of_typ_conflict_report =
 type merge_result =
   | Success(typ)
   | Fail(typ_conflict_report);
+
+type exp =
+  | Var(var)
+  | Fun(var, exp)
+  | App(exp, exp)
+  | Asc(exp, typ);
+let rec string_of_exp = (e: exp): string => {
+  switch (e) {
+  | Var(x) => string_of_var(x)
+  | Asc(Fun(x, e), Fun(t1, t2)) =>
+    "(fun "
+    ++ string_of_exp(Asc(Var(x), t1))
+    ++ " -> "
+    ++ string_of_exp(Asc(e, t2))
+    ++ ")"
+  | Fun(x, e) =>
+    "(fun " ++ string_of_var(x) ++ " -> " ++ string_of_exp(e) ++ ")"
+  | App(e1, e2) => string_of_exp(e1) ++ "(" ++ string_of_exp(e2) ++ ")"
+  | Asc(e, t) => string_of_exp(e) ++ ":" ++ string_of_typ(t)
+  };
+};
+
+// type expected_typ_report =
+//   | Nil;
+// type context_item_report =
+//   | Abs(expected_typ_report)
+//   | Var({
+//       context_item_report,
+//       expected_typ_report,
+//     });
+
+type context =
+  | Nil
+  | Cons((var, typ), context);
+let rec string_of_context = (gamma: context): string => {
+  switch (gamma) {
+  | Nil => "."
+  | Cons((x, t), Nil) => string_of_var(x) ++ ": " ++ string_of_typ(t)
+  | Cons((x, t), gamma) =>
+    string_of_context(Cons((x, t), Nil))
+    ++ ", "
+    ++ string_of_context(gamma)
+  };
+};
+
+type error_report =
+  // | Var_Absent({location: exp})
+  | Var_Present({
+      location: exp,
+      context_typ: typ,
+      expected_typ: typ,
+      typ_conflict_report,
+    });
+// | Asc({
+//     location: exp,
+//     asc_typ: typ,
+//     expected_typ: typ,
+//     typ_conflict_report,
+//   })
+// | Fun({
+//     location: exp,
+//     expected_typ: typ,
+//   });
+
+let string_of_error_report = (report: error_report): string =>
+  switch (report) {
+  | Var_Present({location, context_typ, expected_typ, typ_conflict_report}) =>
+    string_of_exp(location)
+    ++ " seems to have type "
+    ++ string_of_typ(context_typ)
+    ++ " but needs to have type "
+    ++ string_of_typ(expected_typ)
+    ++ ". "
+    ++ string_of_typ_conflict_report(typ_conflict_report)
+  // | _ => "TODO"
+  };
+
+// Functions
+
 let rec merge = (t1: typ, t2: typ): merge_result => {
   switch (t1, t2) {
   | (Base, Base) => Success(Base)
@@ -67,40 +146,6 @@ let match_arrow = (t: typ): (typ, typ) => {
   };
 };
 
-type exp =
-  | Var(var)
-  | Fun(var, exp)
-  | App(exp, exp)
-  | Asc(exp, typ);
-let rec string_of_exp = (e: exp): string => {
-  switch (e) {
-  | Var(x) => string_of_var(x)
-  | Asc(Fun(x, e), Fun(t1, t2)) =>
-    "(fun "
-    ++ string_of_exp(Asc(Var(x), t1))
-    ++ " -> "
-    ++ string_of_exp(Asc(e, t2))
-    ++ ")"
-  | Fun(x, e) =>
-    "(fun " ++ string_of_var(x) ++ " -> " ++ string_of_exp(e) ++ ")"
-  | App(e1, e2) => string_of_exp(e1) ++ "(" ++ string_of_exp(e2) ++ ")"
-  | Asc(e, t) => string_of_exp(e) ++ ":" ++ string_of_typ(t)
-  };
-};
-
-type context =
-  | Nil
-  | Cons((var, typ), context);
-let rec string_of_context = (gamma: context): string => {
-  switch (gamma) {
-  | Nil => "."
-  | Cons((x, t), Nil) => string_of_var(x) ++ ": " ++ string_of_typ(t)
-  | Cons((x, t), gamma) =>
-    string_of_context(Cons((x, t), Nil))
-    ++ ", "
-    ++ string_of_context(gamma)
-  };
-};
 let rec context_add = (gamma: context, x: var, t: typ): context => {
   switch (gamma) {
   | Nil => Cons((x, t), Nil)
@@ -142,40 +187,6 @@ let rec context_merge = (gamma1: context, gamma2: context): context => {
     context_merge(gamma3, context_merge_item(gamma2, x, t))
   };
 };
-
-// Debug
-
-type error_report =
-  // | Var_Absent({location: exp})
-  | Var_Present({
-      location: exp,
-      context_typ: typ,
-      expected_typ: typ,
-      typ_conflict_report,
-    });
-// | Asc({
-//     location: exp,
-//     asc_typ: typ,
-//     expected_typ: typ,
-//     typ_conflict_report,
-//   })
-// | Fun({
-//     location: exp,
-//     expected_typ: typ,
-//   });
-
-let string_of_error_report = (report: error_report): string =>
-  switch (report) {
-  | Var_Present({location, context_typ, expected_typ, typ_conflict_report}) =>
-    string_of_exp(location)
-    ++ " seems to have type "
-    ++ string_of_typ(context_typ)
-    ++ " but needs to have type "
-    ++ string_of_typ(expected_typ)
-    ++ ". "
-    ++ string_of_typ_conflict_report(typ_conflict_report)
-  // | _ => "TODO"
-  };
 
 // Main process function
 
@@ -259,7 +270,7 @@ let test = (e: exp) => {
   print_endline(string_of_context(gamma));
 };
 
-// let let_exp = (x: var, e1: exp, e2: exp): exp => App(Fun(x, e2), e1);
+let let_exp = (x: var, e1: exp, e2: exp): exp => App(Fun(x, e2), e1);
 let const = (x: var, t: typ, e: exp): exp => Asc(Fun(x, e), Fun(t, Hole));
 let example_term =
   const(
@@ -287,21 +298,21 @@ let example_term =
     ),
   );
 
-// let failure_example_term =
-//   const(
-//     "+",
-//     Fun(Base, Fun(Base, Base)),
-//     const("0", Base, let_exp("a", Var("0"), App(Var("a"), Var("0")))),
-//   );
+let failure_example_term =
+  const(
+    "+",
+    Fun(Base, Fun(Base, Base)),
+    const("0", Base, let_exp("a", Var("0"), App(Var("a"), Var("0")))),
+  );
 
 test(example_term);
 
-// test(failure_example_term);
+test(failure_example_term);
 
-let t1: typ = Fun(Fun(Fun(Hole, Base), Hole), Base);
-let t2: typ = Fun(Fun(Base, Hole), Base);
+// let t1: typ = Fun(Fun(Fun(Hole, Base), Hole), Base);
+// let t2: typ = Fun(Fun(Base, Hole), Base);
 
-switch (merge(t1, t2)) {
-| Success(_) => print_endline("impossible")
-| Fail(report) => print_endline(string_of_typ_conflict_report(report))
-};
+// switch (merge(t1, t2)) {
+// | Success(_) => print_endline("impossible")
+// | Fail(report) => print_endline(string_of_typ_conflict_report(report))
+// };
