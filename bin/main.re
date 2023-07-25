@@ -9,8 +9,8 @@ type history =
   | ArrowIn(history)
   | ArrowOut(history)
   | AppArrow(exp)
-  | AppArgOver(history, exp)
-  | AppFunOver(history, exp)
+  | AppArgOver(history, exp, exp)
+  | AppFunOver(history, exp, exp)
 and annotation_item = (option(var), history)
 and annotated_typ('a) =
   | Hole
@@ -168,16 +168,18 @@ let rec string_of_history = (h: history): string => {
   | ArrowOut(h2) =>
     Printf.sprintf("Body of X, and %s ", string_of_history(h2))
   | AppArrow(e) => Printf.sprintf(" %s(_) appears", string_of_exp(e))
-  | AppArgOver(h2, e) =>
+  | AppArgOver(h2, e1, e2) =>
     Printf.sprintf(
-      " F(%s) appears, and %s",
-      string_of_exp(e),
+      " %s(%s) appears, and %s",
+      string_of_exp(e1),
+      string_of_exp(e2),
       string_of_history(h2),
     )
-  | AppFunOver(h2, e) =>
+  | AppFunOver(h2, e1, e2) =>
     Printf.sprintf(
-      " %s(A) appears, and %s",
-      string_of_exp(e),
+      " %s(%s) appears, and %s",
+      string_of_exp(e1),
+      string_of_exp(e2),
       string_of_history(h2),
     )
   };
@@ -215,7 +217,7 @@ and string_of_typ_history = ((t, (_, h)): typ): string => {
       ++ ")"
     }
   )
-  ++ " [because : "
+  ++ " [because "
   ++ string_of_history(h)
   ++ "]";
 }
@@ -248,7 +250,7 @@ let rec string_of_context_history = (gamma: context): string => {
   | [(x, t)] => string_of_var(x) ++ ": " ++ string_of_typ_history(t)
   | [(x, t), ...gamma] =>
     string_of_context_history([(x, t)])
-    ++ ", "
+    ++ ", \n"
     ++ string_of_context_history(gamma)
   };
 };
@@ -309,7 +311,7 @@ and process_app =
           t_in_intermediate;
         } else {
           let (t_in_intermediate, (opt, h)) = t_in_intermediate;
-          (t_in_intermediate, (opt, AppFunOver(h, e1)));
+          (t_in_intermediate, (opt, AppFunOver(h, e1, e2)));
         };
       let (t_in_new, gamma3, errors2) =
         process(e2, t_in_intermediate, gamma2);
@@ -318,7 +320,7 @@ and process_app =
           t_in_new;
         } else {
           let (t_in_new, (opt, h)) = t_in_new;
-          (t_in_new, (opt, AppArgOver(h, e2)));
+          (t_in_new, (opt, AppArgOver(h, e1, e2)));
         };
       let (gamma4, errors3) = context_merge(gamma2, gamma3);
       (
@@ -406,8 +408,9 @@ let example_id: outer_exp =
   Asc(Fun("x", Var("x")), OutArrow(OutHole, OutBase));
 
 test(example_term_long);
-test(failure_example_term);
-test(example_id);
+let _ = (failure_example_term, example_id);
+// test(failure_example_term);
+// test(example_id);
 
 let _ = ArrowOut(IDK);
 let _ = ArrowIn(IDK);
